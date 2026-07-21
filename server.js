@@ -23,6 +23,39 @@ Keep it playful, upbeat, and friendly — like a supportive homie who hypes peop
 Never use slurs, never reference violence, crime, drugs, or weapons, and never stereotype any real ethnic or cultural group — this is just a fun, exaggerated slang persona, not an impression of any real group of people.
 Keep responses fairly short (2-4 sentences), fun, and conversational. Still be genuinely helpful if the user asks a real question — just answer it in this voice.`;
 
+// Free models to try, in order. If one is rate-limited (429) or the
+// provider is down (5xx), we automatically fall through to the next.
+// Feel free to reorder/edit this list — check current free models at
+// https://openrouter.ai/models?supported_parameters=tools&order=top-weekly
+const FREE_MODELS = [
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'openai/gpt-oss-20b:free',
+  'openrouter/free' // auto-router: picks whatever free model is available right now
+];
+
+async function callOpenRouter(model, messages) {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.SITE_URL || 'http://localhost:3000',
+      'X-Title': 'Yo, Whaddup Bot'
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...messages
+      ]
+    })
+  });
+
+  const data = await response.json();
+  return { ok: response.ok, status: response.status, data };
+}
+
 // POST /api/chat
 // Body: { messages: [{ role: 'user' | 'assistant', content: string }, ...] }
 app.post('/api/chat', async (req, res) => {
@@ -35,36 +68,37 @@ app.post('/api/chat', async (req, res) => {
 
     console.log('Key loaded?', !!OPENROUTER_API_KEY, '| Key length:', OPENROUTER_API_KEY ? OPENROUTER_API_KEY.length : 0);
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        // Optional but recommended by OpenRouter for analytics/rankings:
-        'HTTP-Referer': process.env.SITE_URL || 'http://localhost:3000',
-        'X-Title': 'Yo, Whaddup Bot'
-      },
-      body: JSON.stringify({
-        model: 'google/gemma-4-31b-it:free',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          ...messages
-        ]
-      })
-    });
+    let lastResult = null;
 
-    const data = await response.json();
+    for (const model of FREE_MODELS) {
+      const result = await callOpenRouter(model, messages);
+      lastResult = result;
 
-    if (!response.ok) {
-      console.error('OpenRouter error (full):', JSON.stringify(data, null, 2));
-      const detail = data.error?.message
-        ? `${data.error.message}${data.error.code ? ` (code: ${data.error.code})` : ''}`
-        : JSON.stringify(data);
-      return res.status(response.status).json({ error: `OpenRouter says: ${detail}` });
+      if (result.ok) {
+        console.log(`Success with model: ${model}`);
+        const reply = result.data.choices?.[0]?.message?.content || "My bad fam, brain glitched. Try again?";
+        return res.json({ reply });
+      }
+
+      const isRetryable = result.status === 429 || result.status >= 500;
+      console.error(`Model ${model} failed (status ${result.status}):`, JSON.stringify(result.data, null, 2));
+
+      if (!isRetryable) break; // don't bother trying other models for e.g. a 401 (bad key)
+      // otherwise loop continues to the next model in the list
     }
 
-    const reply = data.choices?.[0]?.message?.content || "My bad fam, brain glitched. Try again?";
-    res.json({ reply });
+    // Every model in the list failed (or the first failure wasn't retryable)
+    const data = lastResult.data;
+    const isRateLimit = lastResult.status === 429;
+    const detail = data.error?.message
+      ? `${data.error.message}${data.error.code ? ` (code: ${data.error.code})` : ''}`
+      : JSON.stringify(data);
+
+    const userMessage = isRateLimit
+      ? "Yo fam, every free model's slammed with traffic right now 😅 give it like 30 seconds and try again."
+      : `OpenRouter says: ${detail}`;
+
+    return res.status(lastResult.status).json({ error: userMessage });
 
   } catch (err) {
     console.error('Server error:', err);
