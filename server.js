@@ -33,6 +33,8 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'messages must be an array' });
     }
 
+    console.log('Key loaded?', !!OPENROUTER_API_KEY, '| Key length:', OPENROUTER_API_KEY ? OPENROUTER_API_KEY.length : 0);
+
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -54,8 +56,11 @@ app.post('/api/chat', async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error('OpenRouter error:', data);
-      return res.status(response.status).json({ error: data.error?.message || 'OpenRouter request failed' });
+      console.error('OpenRouter error (full):', JSON.stringify(data, null, 2));
+      const detail = data.error?.message
+        ? `${data.error.message}${data.error.code ? ` (code: ${data.error.code})` : ''}`
+        : JSON.stringify(data);
+      return res.status(response.status).json({ error: `OpenRouter says: ${detail}` });
     }
 
     const reply = data.choices?.[0]?.message?.content || "My bad fam, brain glitched. Try again?";
